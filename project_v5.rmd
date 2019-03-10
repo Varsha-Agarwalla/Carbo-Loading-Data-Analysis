@@ -1,0 +1,585 @@
+---
+title: "Carbo-loading Data Wrangling with R"
+author: "Varsha Agarwalla"
+date: "December 9, 2018"
+output: html_document
+---
+
+## Carbo Loading Analysis(for a US retailer){.tabset .tabset-fade}
+
+### Introduction 
+
+<div style="text-align: center"><img src="image/image.jpg" width = "400" height = "250" /></div>
+
+####What am I trying to do?
+
+I am looking at the carbo-loading household level transactions over a period of two years from four categories- Pasta, Pasta Sauce, Syrup, and Pancake Mix. 
+
+Based on the richness of the data, I want to know: 
+
+1.	Are complementary products bought together?
+
+2.	if product sales depend on the display?
+
+####How to go about this?
+
+I will look at the household-week level transactions for the product categories- pasta and pasta sauce and see if I can identify a pattern in the items bought across the weeks.
+
+I will slice the data at product, week, store, display_desc, and sales level. Then I will see the trend for each product to see if we observe any pattern in sales based on the location of temporary in-store. 
+
+####How will this be useful?
+
+1.	This analysis will help retailer design marketing campaigns for the complementary products.
+
+2.	The product display will help understand how customers make a decision and how display causes impact on the choice a customer makes. 
+
+
+### Packages Required
+
+```{r libraries, echo = TRUE, message = FALSE, warning = FALSE}
+library(tidyverse)  #to visualize, transform, input, tidy and join data
+library(haven)      #to input data from SAS
+library(dplyr)      #data wrangling
+library(stringr)    #string related functions
+library(kableExtra) #to create HTML Table
+library(DT)         #to preview the data sets
+library(lubridate)  #to apply the date functions
+library(arules)     #to represent, manipulate and analyze transactional data
+
+```
+
+### Data Preparation {.tabset .tabset-fade .tabset-pills}
+
+
+#### Data source 
+
+We obtained the **carbo-loading** household level data, obtained through the loyalty card program of a leading US grocer. It contains four data-sets, and was obtained from [here](http://uc-r.github.io/data_wrangling/final-project). Please see the code book at the same location.     
+
+a. ***transactions*** : household level data over a period of two years from four categories: Pasta, Pasta Sauce, Syrup, and Pancake Mix. 
+
+```{r transactions, echo = FALSE, message = FALSE, warning = FALSE}
+text_tbl <- data.frame (
+  Variable = c("upc", "dollar_sales", "units","time_of_transaction","geography", "week","household","store","basket","day","coupon"),
+  Description = c(
+    "Standard 10 digit UPC. ",
+    "Amount of dollars spent by the consumer ", 
+    "Number of products purchased by the consumer ",
+    "The time of transaction(military time) ",
+    "Distinguishes between two large geographical regions, possibly values are 1 or 2 ",
+    "Week of the transaction, values are from 1 to 104 ",
+    "Unique households ",
+    "Unique stores ",
+    "Unique baskets/trips to store ",
+    "day of the transaction, possible values are from 1 to 728 ",
+    "Indicates coupon usage, 1 if used, 0 otherwise "
+  )
+)
+
+kable(text_tbl) %>%
+  kable_styling(full_width = F) %>%
+  column_spec(1, bold = T, border_right = T) %>%
+  column_spec(2, width = "30em")
+```
+
+
+
+ b. ***product lookup*** : detailed product information
+    
+```{r product_lookup, echo = FALSE, message = FALSE, warning = FALSE}
+text_tbl <- data.frame (
+  Variable = c("upc", "product_description", "commodity","brand","product_size"),
+  Description = c(
+    "Standard 10 digit UPC. ",
+    "Description of product ", 
+    "specifies the four product categories under consideration ",
+    "Specific brand of item ",
+    "Specifies package size of product "
+  )
+)
+
+kable(text_tbl) %>%
+  kable_styling(full_width = F) %>%
+  column_spec(1, bold = T, border_right = T) %>%
+  column_spec(2, width = "30em")
+```    
+   
+c. ***causal lookup*** : trade activity for each product/week
+    
+```{r causal_lookup ,echo = FALSE, message = FALSE, warning = FALSE}
+text_tbl <- data.frame (
+  Variable = c("upc", "store", "week","feature_desc","display_desc", "geography"),
+  Description = c(
+    "Standard 10 digit UPC. ",
+    "Identifies unique store ", 
+    "Week of transaction, possible values are 1 through 104 ",
+    "Describes product location on weekly mailer ",
+    "Describes temporary in-store display ",
+    "Distinguishes between two large geographical regions, possible values are 1 or 2 "
+  )
+)
+
+kable(text_tbl) %>%
+  kable_styling(full_width = F) %>%
+  column_spec(1, bold = T, border_right = T) %>%
+  column_spec(2, width = "30em")
+```    
+    
+d. ***store lookup*** : store and it's zip code
+    
+```{r store_lookup ,echo = FALSE, message = FALSE, warning = FALSE}
+text_tbl <- data.frame (
+  Variable = c("store", "store_zip_code"),
+  Features = c(
+    "Identifies unique stores ",
+    "5 digit zip code "
+  )
+)
+
+kable(text_tbl) %>%
+  kable_styling(full_width = F) %>%
+  column_spec(1, bold = T, border_right = T) %>%
+  column_spec(2, width = "30em")
+```    
+    
+    
+I load the four datasets-     
+
+```{r dataload, message=FALSE, warning=FALSE}
+files <- c("causal_lookup", "product_lookup","store_lookup","transactions")
+names <- c("causal_lookup","prd_lookup","store_lookup","transactions")
+
+for (i in seq_along(files)) {
+ df <- read_sas(paste0("data/",files[i],".sas7bdat"))
+ assign(names[i], df)
+ } 
+```
+
+
+#### Data cleaning
+
+   a. UPC is 10 digit in length, so to keep it consistent across the four datasets, I padded *UPC* in the **product lookup** dataset, which originally had UPC of length 9 and 10
+   
+```{r upclength, message = FALSE, warning = FALSE,collapse = TRUE}
+unique(nchar(x = prd_lookup$upc))
+```
+   
+   
+```{r paddingUPC, message = FALSE, warning = FALSE,collapse = TRUE}
+prd_lookup_crtd <- prd_lookup
+prd_lookup_crtd$upc <-  str_pad(prd_lookup$upc, 10, side = "left", pad = '0')
+```
+   
+   b. quantiles on the *dollar_sales* column to check for any absurdity in the data. 
+   
+   
+```{r salescheck ,message = FALSE, warning = FALSE,collapse = TRUE}
+quantile(transactions$dollar_sales, probs = seq(0, 1, 0.01))
+```
+
+It seems like few data points are inconsistent with the other. So, I was interested in knowing if the data is actually skewed, so I ran the quantile function on units as well.
+   
+```{r unitscheck, message = FALSE, warning = FALSE,collapse = TRUE}
+quantile(transactions$units, probs = seq(0, 1, 0.01))
+```
+ 
+I observe the same in units too. 
+  
+Finally I looked at the transactions - 
+
+
+```{r transactionscheck ,message=FALSE, warning=FALSE}
+transactions %>% 
+   mutate_all(as.vector) %>%
+   filter( units > 100) %>% 
+   left_join(prd_lookup_crtd, by = "upc")
+```
+
+   Since there are exactly **three** entries which tell us that more than 100 units of pasta sauce(mapped with the **prd_lookup_crtd** table to get the *commodity name*) were bought by the households at one time, which is not expected. There might be an issue with the data entry here, so I plan to drop these rows for my further analysis purpose. 
+   
+   
+   c. special characters and different measurement units being used in the *product size* column in the **product lookup** dataset. However, I am not using it for my analysis. 
+   
+  
+####Cleaned Datasets
+
+1. After identifying the absurd data point, I removed its entry from the transactions. I also created a copy of the file to keep the original data as it is.
+
+```{r cleaned_data, message = FALSE, warning = FALSE, collapse = TRUE}
+#identifying the data index
+which(transactions$units > 100)
+
+#cross-validating data at the index
+transactions[c(3127414,3522595,4020790),]
+
+#deleting the row and creating another table so as to not mess with the original
+transactions_crtd <- transactions[-c(3127414,3522595,4020790),]
+```
+
+Hence, the identified issues were fixed and thus the tables are ready to be used for further analysis. 
+
+
+*Please note: Instead of creating a master dataset with more than 15 columns, we plan to slice and dice and apply joins in the required data levels.*
+
+#### Summary
+
+ 1. A brief of the *transactions* data which will be majorly used for the entire analysis. 
+```{r transaction_view, echo = FALSE, message = FALSE, warning = FALSE}
+
+transactions_crtd_head <- head(transactions_crtd, n = 20)
+datatable(transactions_crtd_head, caption = "Table 1: Tidy Data Set")
+```
+
+2. The unique number of UPCs that we will primarily use to join our tables: `r length(unique(prd_lookup_crtd$upc))` 
+
+3. All these UPCs are identified in the product_lookup table, so we can fetch the product, brand information
+```{r match, message = FALSE, warning = FALSE}
+transactions_crtd %>%
+  mutate_all(as.vector) %>% 
+  anti_join(prd_lookup_crtd , by = "upc")
+```
+
+4. The different features avaiable in the data and are of interest- `r unique(causal_lookup$feature_desc)`
+
+5. The different temporary in-location display options avaiable: `r unique(causal_lookup$display_desc)`
+
+
+6. The sales and units by display_desc - 
+```{r display, echo = FALSE, message = FALSE, warning = FALSE}
+causal_prd_lookup <- causal_lookup %>% 
+                     mutate_all(as.vector) %>%
+                     left_join(prd_lookup_crtd, by = "upc")
+
+trans_cut <- transactions_crtd %>% 
+             mutate_all(as.vector) %>% 
+             group_by(upc, week,store, geography) %>% 
+             summarize( tot_sales = sum(dollar_sales), 
+                        tot_unit = sum(units)) %>% 
+             inner_join(causal_prd_lookup, 
+                        by = c("upc","week","store","geography") ) %>%
+            select(upc, week,store, geography, 
+                     commodity, display_desc, feature_desc, tot_sales,tot_unit) 
+  
+
+trans_cut %>%  
+  group_by(display_desc) %>%
+  summarise( total_sales = sum(tot_sales), 
+             total_units = sum(tot_unit)) %>%
+  arrange(desc(total_sales),desc(total_units))
+  
+```
+
+I observe that for products that aren't in display have more sales overall
+
+7. The sales and units by feature_desc- 
+```{r feature, echo = FALSE, message = FALSE, warning = FALSE}
+ trans_cut %>%  
+  group_by(feature_desc) %>%
+  summarise( total_sales = sum(tot_sales), 
+             total_units = sum(tot_unit)) %>%
+  arrange(desc(total_sales),desc(total_units))
+```
+
+I observe that for products that are featured in the interior page have more sales overall
+
+
+### Exploratory Data Analysis {.tabset .tabset-fade .tabset-pills} 
+
+In this section, I started with initial data observation, tried to identify a buying pattern of complementary products and also looked at how sales differ based on the temporary in-store display of the products.
+
+#### Initial Data Observations 
+
+
+Which brands are responsible for more sales within each commodity?(*Top 5*)
+```{r figure1, message=FALSE, warning=FALSE, paged.print=FALSE}
+#which brand is performing better
+transactions_crtd %>% 
+  mutate_all(as.vector) %>% 
+  inner_join(prd_lookup_crtd, by = c("upc") ) %>%
+  select(upc, week,store, geography, commodity, brand, dollar_sales,units) %>% 
+  group_by( commodity,brand) %>% 
+  summarize( total_sales = sum(dollar_sales), total_units = sum(units)) %>%
+  arrange(desc(total_sales),desc(total_units)) %>%
+  top_n(5, wt = total_sales) %>% 
+  ggplot( aes(x = reorder(brand,-total_sales), total_sales)) +
+  geom_bar(stat = "identity", fill = "Indian red") +
+  facet_wrap(~commodity, scales = "free") +
+  scale_x_discrete("Brand") +
+  scale_y_continuous("Total Sales",labels = scales::comma) +
+  labs(title = "Total sales by Brand and Commodity",
+             subtitle = "Out of 131 brands, we observe top five brands from each commodity; \nPrivate Label is one of the most preferred brands among all the commodities") +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        legend.title = element_blank(),
+        legend.justification = c(0, 1), 
+        legend.position = c(.1, 1.075),
+        legend.background = element_blank(),
+        legend.direction="horizontal",
+        text = element_text(family = "Georgia", size = 7),
+        plot.title = element_text(size = 20, margin = margin(b = 10)),
+        plot.subtitle = element_text(size = 10, color = "darkslategrey", margin = margin(b = 25)),
+        plot.caption = element_text(size = 8, margin = margin(t = 10), color = "grey70", hjust = 0)) 
+
+```
+
+
+  
+```{r timeconversion, message=FALSE, warning=FALSE}
+#extracting hour information 
+library(lubridate)
+transactions_crtd$time_of_transaction <- as.POSIXct(transactions_crtd$time_of_transaction,format="%H") 
+transactions_crtd$time_of_transaction <- hour(transactions_crtd$time_of_transaction) 
+
+```
+
+What is the preferrable shopping time?
+
+```{r time, message=FALSE, warning=FALSE}
+transactions_crtd %>% 
+  ggplot(aes(x = time_of_transaction)) + 
+  geom_histogram(stat = "count",fill = "indianred") +
+  theme(rect = element_blank()) + 
+  scale_x_continuous("Time of Day" ) +
+  scale_y_continuous("Count",  labels = scales::comma) +
+  labs(title = "Most Preferred Shopping Time",
+             subtitle = "people start shopping around morning 10; \n15:00 to 18:00 are the rush hours") +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        legend.title = element_blank(),
+        legend.justification = c(0, 1), 
+        legend.position = c(.1, 1.075),
+        legend.background = element_blank(),
+        legend.direction="horizontal",
+        text = element_text(family = "Georgia", size = 7),
+        plot.title = element_text(size = 20, margin = margin(b = 10)),
+        plot.subtitle = element_text(size = 10, color = "darkslategrey", margin = margin(b = 25)),
+        plot.caption = element_text(size = 8, margin = margin(t = 10), color = "grey70", hjust = 0))
+```
+
+
+Which items are sold more?
+
+```{r figure3, message=FALSE, warning=FALSE}
+transactions_crtd %>% 
+  mutate_all(as.vector) %>% 
+  filter(dollar_sales > 0) %>% 
+  inner_join(prd_lookup_crtd, by = c("upc") ) %>%
+  select(upc, week,store, geography, 
+         commodity,basket, brand, dollar_sales,units) %>%
+  group_by(commodity) %>% 
+  summarize(count = sum(units)) %>% 
+  arrange(desc(count)) %>% 
+  ggplot(aes(x=reorder(commodity,count), y=count))+
+  geom_bar(stat="identity",fill="indian red")+
+  scale_x_discrete("Commodity") +
+  scale_y_continuous("Total units bought",labels = scales::comma) +
+  labs(title = "Total Units Bought by Commodity",
+             subtitle = "Pasta is the most preferred product; \nPancakes are less preferred") +
+  theme_minimal() +
+  theme(rect = element_blank()) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        legend.title = element_blank(),
+        legend.justification = c(0, 1), 
+        legend.position = c(.1, 1.075),
+        legend.background = element_blank(),
+        legend.direction="horizontal",
+        text = element_text(family = "Georgia", size = 7),
+        plot.title = element_text(size = 20, margin = margin(b = 10)),
+        plot.subtitle = element_text(size = 10, color = "darkslategrey", margin = margin(b = 25)),
+        plot.caption = element_text(size = 8, margin = margin(t = 10), color = "grey70", hjust = 0))
+ 
+```
+
+Since Pasta and Pasta Sauce happens to generate more sales, I would like to know -
+
+A. if a relationship exists between the sales of complementary commodities (Pasta and Pasta Sauce)
+
+B. if sales is dependent on the display of the product
+
+#### Complementary Products
+
+**Part A:** Checking if a relationship exists between the sales of complementary commodities (Pasta and Pasta Sauce)
+
+I am using the basket analysis which uses **Association Rule Mining** to look for combinations of items that occur together frequently in transactions. It tells us which items customer frequently buys together by generating a set of rules. There are two statistical measures that can be used to determine whether or not a rule is deemed "interesting"
+
+*Support*: Fraction of transactions that contain the item-set. If Support = 0.2, it means 20% of transaction show which A is bought with B
+
+*Confidence*: It shows the percentage in which B is bought with A. If Confidence = 0.6; it means  60% of customers who purchase A also purchase B
+
+
+```{r arules, message=FALSE, warning=FALSE}
+#filtered the data for geography 1 for the analysis
+market <- transactions_crtd %>%
+            left_join(prd_lookup_crtd, by="upc") %>% 
+            filter(geography == 1  ) %>% 
+            arrange(desc(commodity)) %>% 
+            select(basket,commodity) %>% 
+            distinct() 
+
+#using ddply package for ddply function
+#The function ddply() accepts a data frame, splits it into pieces based on one or more factors, computes on the pieces, and then returns the results as a data frame
+transactionData <- plyr::ddply(market,c("basket"),
+                         function(market)paste(market$commodity,
+                                            collapse = ","))
+
+#removing all columns except for the items 
+transactionData$basket = NULL
+
+colnames(transactionData) <- c("items")
+
+#writing the transactional data in another file
+write.csv(x = transactionData$items, 
+          file = "edited_transaction_required.csv", 
+          quote = FALSE, row.names = FALSE)
+
+groceries <- read.transactions('edited_transaction_required.csv',
+                               format = 'basket', sep=',', skip = 1)
+summary(groceries)
+```
+
+So, we have 1,776,754 transactions containing 4 different items. We observe the count of transactions that involved an item. The second block of our output contains summary statistics about the size of each transaction. For example, there were 506,297 transactions in which only 2 items were bought and 8,245 transaction in which all 4 items were bought.
+
+
+Below is a view of the transactions -  
+```{r groceries, message=FALSE, warning=FALSE}
+inspect(groceries[1:10])
+```
+
+
+Let's look at the frequency of items that are purchased- 
+```{r freq, message=FALSE, warning=FALSE}
+itemFrequency(groceries[, 1:4])
+```
+
+We observe that only 9% of transaction involves pancake mixes whereas Pasta was bought in 58% of the transactions. Below is the plot for the same-
+
+```{r freqplot, message=FALSE, warning=FALSE}
+itemFrequencyPlot(groceries, topN  = 4)
+```
+
+
+We create certain rules using the **Apriori** algorithm. We pass *support* = 0.05 and *confidence* = 0.5 to return all the rules that have a support of at least 5% and confidence of at least 50%
+
+```{r Apriori, message=FALSE, warning=FALSE, include=FALSE}
+rules <- apriori(groceries, parameter = list(supp=0.005, conf=0.5))
+```
+
+```{r rules, message=FALSE, warning=FALSE}
+#sorting on the decreasing order of confidence
+rules <- sort(rules, by ='confidence', decreasing = TRUE)
+summary(rules)
+```
+
+We obtain 6 rules, out of which 4 rules are for the length of 3 items.
+
+Let's print all the rules- 
+```{r datatable, message=FALSE, warning=FALSE, include=FALSE, paged.print=TRUE}
+inspect_rules <- inspect(rules) %>% 
+                   as.data.frame()
+```
+```{r printingrules, message=FALSE, warning=FALSE}
+inspect_rules[,c(-1,-2,-3)] <- round(inspect_rules[,c(-1,-2,-3)],3)
+datatable(inspect_rules)
+```
+
+Thus we observe that - 
+
+1. More than 60% of the time, customers who bought Pasta also bought Pasta Sauce. However, we do not observe any such pattern for Pancake mixes and Syrups.
+
+2. More than 50% of the time, people who bought Pasta and Pasta Sauce, also bought Syrups. This is little different from my expectation. However, I researched and believe it or not, it became a popular dish after being featured in the movie ***Elf***.
+
+They said- "*The combination might be unorthodox, but the contrast between sweet and savory couldn’t be more classic*"   
+(*p.s. this is not based on any analysis* :P). You can read more about it [here](https://www.myrecipes.com/extracrispy/elf-is-right-about-maple-syrup-on-spaghetti)
+
+
+*please note: Since the dataset is huge, I have filtered the data for geogrpahy = 1 in this analysis*
+
+#### Role of Display
+
+**Part B:** Checking impact of *display_desc* on the sales of commodities
+
+I would like to see if average sales across the different display differ using ANOVA. 
+
+> Null hypothesis **Ho** : sales are independent of display of product
+<br />
+<br />
+Alternate hypthesis **Ha** : sales are dependent on display
+
+```{r anova, message=FALSE, warning=FALSE}
+#filtered the data for geography 1 for the analysis
+#using the previously created dataset
+trans_geo <- trans_cut %>% 
+              filter(geography == 1 ) 
+
+#applying ANOVA
+anova <- aov(tot_sales ~ display_desc, data = trans_geo)
+summary(anova)
+```
+
+Since the p-value is < 0.05(the significance level), we can say reject the null hypothesis. Thus, ANOVA results tells that the sales is dependent on the display of the product and the results are significant overall, but it doesn't tell us where those differences lie.
+
+I use **TukeyHSD**(Honestly Singificant Difference) test to do pair-wise comparison and identify the ones that differ. It tells us which specific groups's means are different.
+
+When `p adj` is less than 0.05, we reject Ho and thus we can say that there is a significant difference in the sales in that particular pair of display.
+
+```{r tukey, message=FALSE, warning=FALSE}
+tukey_ouput <- TukeyHSD(anova, ordered = TRUE)
+tukey_ouput <- tukey_ouput$display_desc %>%     #strips off some headers in kk
+                        as.data.frame()
+tukey_ouput <- round(tukey_ouput,5)
+tukey_ouput_cut <- tukey_ouput[tukey_ouput$`p adj` < 0.05,] 
+datatable(tukey_ouput_cut, filter = 'top', 
+          options = list(pageLength = 12, autoWidth = TRUE ))
+```
+
+Therefore, we can clearly note an increase in difference of average sales for the ones which were on *Promo/Seasonal Aisle*  than  the ones which were *Not on Display*. Diference lies in 36 such pairs. This completely changes our initial observations.
+
+*please note: Since the dataset is huge, I have filtered the data for geogrpahy = 1 in this analysis*
+
+### Summary
+
+**Problem Statement**
+
+This analysis is intended to identify shopping pattern of customers and their preferences which would help retailers in generating more revenue and also enhance customers' experience. 
+
+**Methodology**
+
+1. In order to gain a clear understanding of the customers buying pattern, I used *Apriori Algorithm* to perform Market Basket Analysis. This technique helps us to uncover associations between items, by looking for combinations of items that occur togther in transactions and providing information to understand the purchase behavior 
+
+2. For identifying if sales depend on the in-store display of the products, I performed ANOVA test. ANOVA test tells us if the results are significant or not, but to identify where exactly the difference lies, I used *TukeyHSD* test
+
+**Insights**
+
+1. We observed that in more than 60% of the transactions, Pasta and Pasta Sauce are bought together. This will help us to redesign the store layout by putting them together and develop cross-promotional programs
+
+2. Since customers are buying the products at a time, putting both the items on promotion at the same time might not create a significant increase in revenue, while a promotion involving just one of the items would likely drive sales of the other
+
+3. No identifiable pattern was found between the sales of Pancake mixes and Syrups. But again, only 9% of the transactions invloved sales for Pancake mixes
+
+4. The store layout does affect sales. The overall numbers say that products that were **Not On Display** generated more sales, however after thorough analysis, we observed an entire different story. Products placed in **Store Front** or **Seasonal Aisle** generated more sales on an average when compared to the ones that were **Not on display**.
+
+
+**Implications**
+
+The analysis can be used to gain an understanding of customer's journey while shopping. Clients can use the rules generated by the algorithm for numerous marketing strategies - 
+
+1. Changing the store layout 
+
+2. Customer behavior analysis
+
+3. Catalogue(feature in mailer) design
+
+4. Cross marketing 
+
+5. Customized emails with add-on samples
+
+6. providing recommendations while online shopping
+
+
+**Limitations**
+
+This analysis was limited by the number of items in the data. In future, I would like to include more items and observe pattern in customers' preference. I would also like to look at the top performing stores, identify reasons for their performances and build strategies for the ones that aren't performing well comparatively. 
+
+
