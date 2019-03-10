@@ -1,6 +1,11 @@
 # Carbo-Loading-Data-Analysis
 Identified complementary products using Market Basket analysis and also studied how the sales depend on the temporary display of the product so as to re-design the store layout
 
+You will find the link to the project here - 
+
+http://rpubs.com/Varsha_agarwalla/448898
+
+
 What am I trying to do?
 
 I am looking at the carbo-loading household level transactions over a period of two years from four categories- Pasta, Pasta Sauce, Syrup, and Pancake Mix.
