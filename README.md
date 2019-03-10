@@ -7,9 +7,9 @@ I am looking at the carbo-loading household level transactions over a period of 
 
 Based on the richness of the data, I want to know:
 
-Are complementary products bought together?
+- Are complementary products bought together?
 
-if product sales depend on the display?
+- if product sales depend on the display?
 
 How to go about this?
 
